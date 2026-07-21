@@ -1,6 +1,6 @@
 cask "thrurndis" do
   version "0.2.0"
-  sha256 "cbb26b13e024805f273ad73f78fa2864ab08e2ce6f73ef624a6f1444ae7bc71d"
+  sha256 "9b9e56657e81a8c8f91dc2ad4ca531916a0db090861e4fe2942216e345fd5e78"
 
   url "https://github.com/Afcoo/ThruRNDIS/releases/download/v#{version}/ThruRNDIS-#{version}.dmg"
   name "ThruRNDIS"
