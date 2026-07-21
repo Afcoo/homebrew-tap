@@ -136,47 +136,93 @@ jobs:
 
       - name: Report validation failure
         if: failure() && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTIFICATION_TITLE: "Cask validation is failing"
-        run: |
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          printf -v body 'Cask validation failed.\n\n- Run: %s\n- Commit: `%s`\n- Event: `%s`' \
-            "$run_url" "$GITHUB_SHA" "$GITHUB_EVENT_NAME"
-          issue_number="$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --search "$NOTIFICATION_TITLE in:title" \
-            --json number \
-            --jq '.[0].number // empty')"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const title = "Cask validation is failing";
+            const { owner, repo } = context.repo;
+            const runURL = [
+              process.env.GITHUB_SERVER_URL,
+              process.env.GITHUB_REPOSITORY,
+              "actions/runs",
+              process.env.GITHUB_RUN_ID,
+            ].join("/");
+            const body = [
+              "Cask validation failed.",
+              "",
+              `- Run: ${runURL}`,
+              `- Commit: \`${context.sha}\``,
+              `- Event: \`${context.eventName}\``,
+            ].join("\n");
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+            const issue = issues.find(candidate =>
+              candidate.title === title && !candidate.pull_request
+            );
 
-          if [[ -n "$issue_number" ]]; then
-            gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
-          else
-            gh issue create \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "$NOTIFICATION_TITLE" \
-              --body "$body" \
-              --assignee "$GITHUB_REPOSITORY_OWNER"
-          fi
+            if (issue) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issue.number,
+                body,
+              });
+              await github.rest.issues.addAssignees({
+                owner,
+                repo,
+                issue_number: issue.number,
+                assignees: [owner],
+              });
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+                assignees: [owner],
+              });
+            }
 
       - name: Resolve validation failure notification
         if: success() && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTIFICATION_TITLE: "Cask validation is failing"
-        run: |
-          issue_number="$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --search "$NOTIFICATION_TITLE in:title" \
-            --json number \
-            --jq '.[0].number // empty')"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const title = "Cask validation is failing";
+            const { owner, repo } = context.repo;
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+            const issue = issues.find(candidate =>
+              candidate.title === title && !candidate.pull_request
+            );
 
-          if [[ -n "$issue_number" ]]; then
-            run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            gh issue comment "$issue_number" \
-              --repo "$GITHUB_REPOSITORY" \
-              --body "Cask validation recovered: ${run_url}"
-            gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY"
-          fi
+            if (issue) {
+              const runURL = [
+                process.env.GITHUB_SERVER_URL,
+                process.env.GITHUB_REPOSITORY,
+                "actions/runs",
+                process.env.GITHUB_RUN_ID,
+              ].join("/");
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issue.number,
+                body: `Cask validation recovered: ${runURL}`,
+              });
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issue.number,
+                state: "closed",
+              });
+            }
