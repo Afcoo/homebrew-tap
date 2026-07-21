@@ -11,6 +11,8 @@ on:
     paths:
       - Casks/**
       - .github/workflows/cask-validation.yml
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 concurrency:
@@ -19,10 +21,13 @@ concurrency:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   validate:
     runs-on: macos-26
+    env:
+      CASK_LIST_FILE: ${{ runner.temp }}/casks-to-validate.txt
     steps:
       - name: Set up Homebrew
         id: set-up-homebrew
@@ -45,18 +50,79 @@ jobs:
       - name: Validate tap syntax
         run: brew test-bot --only-tap-syntax
 
-      - name: Validate all Casks
+      - name: Select Casks to validate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
         shell: bash
         run: |
           set -euo pipefail
 
+          validate_all=false
+          comparison_base=""
+
+          case "$EVENT_NAME" in
+            schedule|workflow_dispatch)
+              validate_all=true
+              ;;
+            pull_request)
+              comparison_base="$BASE_SHA"
+              ;;
+            push)
+              comparison_base="$BEFORE_SHA"
+              if [[ -z "$comparison_base" || "$comparison_base" =~ ^0+$ ]]; then
+                validate_all=true
+              fi
+              ;;
+          esac
+
+          if [[ "$validate_all" == false ]]; then
+            if ! git cat-file -e "${comparison_base}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$comparison_base"
+            fi
+
+            changed_files="$(git diff --name-only "$comparison_base" HEAD -- Casks .github/workflows/cask-validation.yml)"
+            if printf '%s\n' "$changed_files" | grep -qx '.github/workflows/cask-validation.yml'; then
+              validate_all=true
+            fi
+          fi
+
+          if [[ "$validate_all" == true ]]; then
+            find Casks -type f -name '*.rb' | LC_ALL=C sort > "$CASK_LIST_FILE"
+            echo "Selected every Cask for validation."
+          else
+            changed_file_list="$RUNNER_TEMP/changed-files.txt"
+            printf '%s\n' "$changed_files" > "$changed_file_list"
+            while IFS= read -r changed_file; do
+              if [[ "$changed_file" =~ ^Casks/.+\.rb$ && -f "$changed_file" ]]; then
+                printf '%s\n' "$changed_file"
+              fi
+            done < "$changed_file_list" | LC_ALL=C sort -u > "$CASK_LIST_FILE"
+            echo "Selected only changed Casks for validation."
+          fi
+
+          if [[ -s "$CASK_LIST_FILE" ]]; then
+            sed 's/^/- /' "$CASK_LIST_FILE"
+          else
+            echo "No Casks require per-release validation."
+          fi
+
+      - name: Validate selected Casks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -s "$CASK_LIST_FILE" ]]; then
+            echo "No Casks selected; tap syntax validation is sufficient for this change."
+            exit 0
+          fi
+
           repository_name="${GITHUB_REPOSITORY#*/}"
           tap_owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
           tap_name="${tap_owner}/${repository_name#homebrew-}"
-          cask_count=0
 
           while IFS= read -r cask_file; do
-            cask_count=$((cask_count + 1))
             token="$(basename "$cask_file" .rb)"
             cask="${tap_name}/${token}"
 
@@ -66,9 +132,51 @@ jobs:
             brew livecheck --cask "$cask"
             brew fetch --cask "$cask"
             echo "::endgroup::"
-          done < <(find Casks -type f -name '*.rb' | LC_ALL=C sort)
+          done < "$CASK_LIST_FILE"
 
-          if (( cask_count == 0 )); then
-            echo "No Casks were found under Casks/." >&2
-            exit 1
+      - name: Report validation failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTIFICATION_TITLE: "Cask validation is failing"
+        run: |
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          printf -v body 'Cask validation failed.\n\n- Run: %s\n- Commit: `%s`\n- Event: `%s`' \
+            "$run_url" "$GITHUB_SHA" "$GITHUB_EVENT_NAME"
+          issue_number="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --search "$NOTIFICATION_TITLE in:title" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "$issue_number" ]]; then
+            gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$NOTIFICATION_TITLE" \
+              --body "$body" \
+              --assignee "$GITHUB_REPOSITORY_OWNER"
+          fi
+
+      - name: Resolve validation failure notification
+        if: success() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTIFICATION_TITLE: "Cask validation is failing"
+        run: |
+          issue_number="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --search "$NOTIFICATION_TITLE in:title" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "$issue_number" ]]; then
+            run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            gh issue comment "$issue_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "Cask validation recovered: ${run_url}"
+            gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY"
           fi
