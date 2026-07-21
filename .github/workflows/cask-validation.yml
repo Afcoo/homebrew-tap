@@ -27,7 +27,7 @@ jobs:
   validate:
     runs-on: macos-26
     env:
-      CASK_LIST_FILE: ${{ runner.temp }}/casks-to-validate.txt
+      CASK_LIST_FILE: .casks-to-validate.txt
     steps:
       - name: Set up Homebrew
         id: set-up-homebrew
