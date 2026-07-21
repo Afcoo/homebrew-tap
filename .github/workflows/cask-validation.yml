@@ -1,0 +1,55 @@
+name: Validate Cask
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Casks/**
+      - .github/workflows/cask-validation.yml
+  pull_request:
+    paths:
+      - Casks/**
+      - .github/workflows/cask-validation.yml
+  workflow_dispatch:
+
+concurrency:
+  group: cask-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-26
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ${{ runner.os }}-rubygems-
+
+      - name: Prepare Homebrew test environment
+        run: |
+          brew test-bot --only-cleanup-before
+          brew test-bot --only-setup
+
+      - name: Validate tap syntax
+        run: brew test-bot --only-tap-syntax
+
+      - name: Audit Cask
+        run: brew audit --strict --online --cask afcoo/tap/thrurndis
+
+      - name: Check latest release detection
+        run: brew livecheck --cask afcoo/tap/thrurndis
+
+      - name: Verify release download and checksum
+        run: brew fetch --cask afcoo/tap/thrurndis
