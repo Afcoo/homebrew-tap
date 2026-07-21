@@ -1,4 +1,4 @@
-name: Validate Cask
+name: Validate Casks
 
 on:
   push:
@@ -45,11 +45,30 @@ jobs:
       - name: Validate tap syntax
         run: brew test-bot --only-tap-syntax
 
-      - name: Audit Cask
-        run: brew audit --strict --online --cask afcoo/tap/thrurndis
+      - name: Validate all Casks
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Check latest release detection
-        run: brew livecheck --cask afcoo/tap/thrurndis
+          repository_name="${GITHUB_REPOSITORY#*/}"
+          tap_owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          tap_name="${tap_owner}/${repository_name#homebrew-}"
+          cask_count=0
 
-      - name: Verify release download and checksum
-        run: brew fetch --cask afcoo/tap/thrurndis
+          while IFS= read -r cask_file; do
+            cask_count=$((cask_count + 1))
+            token="$(basename "$cask_file" .rb)"
+            cask="${tap_name}/${token}"
+
+            echo "::group::Validate ${cask}"
+            brew style "$cask"
+            brew audit --strict --online --cask "$cask"
+            brew livecheck --cask "$cask"
+            brew fetch --cask "$cask"
+            echo "::endgroup::"
+          done < <(find Casks -type f -name '*.rb' | LC_ALL=C sort)
+
+          if (( cask_count == 0 )); then
+            echo "No Casks were found under Casks/." >&2
+            exit 1
+          fi
